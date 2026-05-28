@@ -22,6 +22,7 @@ ADDING_CAT = 1
 # ── Datenbank ─────────────────────────────────────────────────────────────────
 
 def init_db():
+    os.makedirs(os.path.dirname(DB), exist_ok=True) if os.path.dirname(DB) else None
     with sqlite3.connect(DB) as c:
         c.executescript("""
             CREATE TABLE IF NOT EXISTS categories (
