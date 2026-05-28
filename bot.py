@@ -18,6 +18,7 @@ from telegram.ext import (
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 DB         = os.environ.get("DB_PATH", "bibliothek.db")
 ADDING_CAT = 1
+IMPORT_MODE = False  # when True, PDFs are auto-saved as Unsorted without category prompt
 
 # ── Datenbank ─────────────────────────────────────────────────────────────────
 
@@ -180,14 +181,43 @@ async def cb_main(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
 # ── PDF empfangen (nur Admins kategorisieren) ─────────────────────────────────
 
+async def cmd_startimport(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    global IMPORT_MODE
+    if not await is_admin(u, c):
+        await u.message.reply_text("⛔ Admins only."); return
+    IMPORT_MODE = True
+    await u.message.reply_text(
+        "📥 *Import mode ON*\n\nAll incoming PDFs will be saved automatically as *Unsorted* — no category prompt.\n\nRun your bulk import script now. Use /stopimport when done.",
+        parse_mode="Markdown"
+    )
+
+async def cmd_stopimport(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    global IMPORT_MODE
+    if not await is_admin(u, c):
+        await u.message.reply_text("⛔ Admins only."); return
+    IMPORT_MODE = False
+    total = db("SELECT COUNT(*) FROM pdfs WHERE category='Unsorted'", fetch="one")[0]
+    await u.message.reply_text(
+        f"✅ *Import mode OFF*\n\n{total} PDFs are in *Unsorted* — ready to categorize via /library.",
+        parse_mode="Markdown"
+    )
+
 async def handle_pdf(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    global IMPORT_MODE
     doc = u.message.document
     if not doc or doc.mime_type != "application/pdf":
         return
 
+    if IMPORT_MODE:
+        sender = u.effective_user.first_name or "Unknown"
+        saved = save_pdf(doc.file_id, doc.file_name or "Unknown.pdf", "Unsorted", sender)
+        if saved:
+            await u.message.reply_text(f"📥 Saved: *{doc.file_name}*", parse_mode="Markdown",
+                                        reply_to_message_id=u.message.message_id)
+        return
+
     admin = await is_admin(u, c)
     if not admin:
-        # Normale Mitglieder: nur Info-Nachricht
         await u.message.reply_text(
             "📄 New PDF detected! An admin will categorize it shortly.",
             reply_to_message_id=u.message.message_id
@@ -471,9 +501,11 @@ def main():
         per_message=False,
     )
 
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("library", cmd_library))
-    app.add_handler(CommandHandler("search",  cmd_search))
+    app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("library",     cmd_library))
+    app.add_handler(CommandHandler("search",      cmd_search))
+    app.add_handler(CommandHandler("startimport", cmd_startimport))
+    app.add_handler(CommandHandler("stopimport",  cmd_stopimport))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
     app.add_handler(new_cat_conv)
 
