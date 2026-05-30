@@ -4,3 +4,6 @@
 __pycache__/
 *.pyc
 .env
+bulk_import.py
+*.session
+*.session-journal
