@@ -32,7 +32,8 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS pdfs (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_id    TEXT NOT NULL UNIQUE,
+                file_id    TEXT NOT NULL,
+                file_uid   TEXT UNIQUE,
                 filename   TEXT NOT NULL,
                 category   TEXT NOT NULL DEFAULT 'Unsorted',
                 added_by   TEXT,
@@ -53,6 +54,12 @@ def init_db():
                 ('Youth & Children'),
                 ('Missions & Evangelism');
         """)
+        # Migration: add file_uid to DBs created before dedupe fix
+        try:
+            c.execute("ALTER TABLE pdfs ADD COLUMN file_uid TEXT")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pdfs_file_uid ON pdfs(file_uid)")
+        except sqlite3.OperationalError:
+            pass
 
 def db(sql, params=(), fetch=None):
     with sqlite3.connect(DB) as conn:
@@ -73,10 +80,10 @@ def del_cat(n):
     db("DELETE FROM categories WHERE name=?", (n,))
     return count
 
-def save_pdf(file_id, filename, category, added_by):
+def save_pdf(file_id, file_uid, filename, category, added_by):
     try:
-        db("INSERT INTO pdfs (file_id,filename,category,added_by,date_added) VALUES (?,?,?,?,?)",
-           (file_id, filename, category, added_by, datetime.now().strftime("%d.%m.%Y %H:%M")))
+        db("INSERT INTO pdfs (file_id,file_uid,filename,category,added_by,date_added) VALUES (?,?,?,?,?,?)",
+           (file_id, file_uid, filename, category, added_by, datetime.now().strftime("%d.%m.%Y %H:%M")))
         return True
     except sqlite3.IntegrityError:
         return False
@@ -210,7 +217,7 @@ async def handle_pdf(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
     if IMPORT_MODE:
         sender = u.effective_user.first_name or "Unknown"
-        saved = save_pdf(doc.file_id, doc.file_name or "Unknown.pdf", "Unsorted", sender)
+        saved = save_pdf(doc.file_id, doc.file_unique_id, doc.file_name or "Unknown.pdf", "Unsorted", sender)
         if saved:
             await u.message.reply_text(f"📥 Saved: *{doc.file_name}*", parse_mode="Markdown",
                                         reply_to_message_id=u.message.message_id)
@@ -227,6 +234,7 @@ async def handle_pdf(u: Update, c: ContextTypes.DEFAULT_TYPE):
     sender = u.effective_user.first_name or "Unknown"
     c.user_data["pdf"] = {
         "file_id":  doc.file_id,
+        "file_uid": doc.file_unique_id,
         "filename": doc.file_name or "Unknown.pdf",
         "added_by": sender,
     }
