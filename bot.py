@@ -287,11 +287,97 @@ async def cb_browse(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if page > 0:         nav.append(InlineKeyboardButton("◀️", callback_data=f"browse_{cat}__p{page-1}"))
     if page+1 < pages:   nav.append(InlineKeyboardButton("▶️", callback_data=f"browse_{cat}__p{page+1}"))
     if nav: rows.append(nav)
+    if total > 0 and await is_admin_by_query(q, c):
+        rows.append([InlineKeyboardButton("📦 Select multiple", callback_data=f"bulk_{cat}")])
     rows.append([InlineKeyboardButton("⬅️ Categories", callback_data="lib")])
 
     await q.edit_message_text(
         f"📁 *{cat}*  ·  {total} PDFs  ·  Page {page+1}/{pages}",
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+# ── Bulk Move (nur Admins) ────────────────────────────────────────────────────
+
+async def render_bulk(q, c):
+    b = c.user_data["bulk"]
+    cat, page, sel = b["cat"], b["page"], b["sel"]
+    pdfs, total = get_pdfs(cat, page * 8)
+    pages = max(1, (total + 7) // 8)
+
+    rows = []
+    for pid, fn in pdfs:
+        mark = "✅" if pid in sel else "⬜"
+        rows.append([InlineKeyboardButton(f"{mark} {fn[:42]}", callback_data=f"bsel_{pid}")])
+    nav = []
+    if page > 0:        nav.append(InlineKeyboardButton("◀️", callback_data=f"bpage_{page-1}"))
+    if page+1 < pages:  nav.append(InlineKeyboardButton("▶️", callback_data=f"bpage_{page+1}"))
+    if nav: rows.append(nav)
+    if sel:
+        rows.append([InlineKeyboardButton(f"📦 Move {len(sel)} selected →", callback_data="bmv")])
+    rows.append([InlineKeyboardButton("⬅️ Done / Cancel", callback_data=f"browse_{cat}")])
+
+    await q.edit_message_text(
+        f"📦 *Bulk Move — {cat}*\nTap PDFs to select · {len(sel)} selected\nPage {page+1}/{pages}",
+        parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+async def cb_bulk_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query
+    if not await is_admin_by_query(q, c):
+        await q.answer("⛔ Admins only.", show_alert=True); return
+    await q.answer()
+    cat = q.data.removeprefix("bulk_")
+    c.user_data["bulk"] = {"cat": cat, "page": 0, "sel": set()}
+    await render_bulk(q, c)
+
+async def cb_bulk_toggle(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query; await q.answer()
+    b = c.user_data.get("bulk")
+    if not b:
+        await q.edit_message_text("❌ Session expired. Open the category again."); return
+    pid = int(q.data.removeprefix("bsel_"))
+    b["sel"].symmetric_difference_update({pid})
+    await render_bulk(q, c)
+
+async def cb_bulk_page(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query; await q.answer()
+    b = c.user_data.get("bulk")
+    if not b:
+        await q.edit_message_text("❌ Session expired. Open the category again."); return
+    b["page"] = int(q.data.removeprefix("bpage_"))
+    await render_bulk(q, c)
+
+async def cb_bulk_move_prompt(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query; await q.answer()
+    b = c.user_data.get("bulk")
+    if not b or not b["sel"]:
+        await q.edit_message_text("❌ Nothing selected."); return
+    cats = [cat for cat in get_cats() if cat != b["cat"]]
+    rows = [[InlineKeyboardButton(f"📁 {cat}", callback_data=f"bmvto_{cat}")] for cat in cats]
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"bulk_{b['cat']}")])
+    await q.edit_message_text(
+        f"📦 Move *{len(b['sel'])} PDFs* to which category?",
+        parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+async def cb_bulk_move_to(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query
+    if not await is_admin_by_query(q, c):
+        await q.answer("⛔ Admins only.", show_alert=True); return
+    await q.answer()
+    b = c.user_data.pop("bulk", None)
+    if not b or not b["sel"]:
+        await q.edit_message_text("❌ Session expired. Open the category again."); return
+    new_cat = q.data.removeprefix("bmvto_")
+    for pid in b["sel"]:
+        move_pdf(pid, new_cat)
+    await q.edit_message_text(
+        f"✅ Moved *{len(b['sel'])} PDFs* to *{new_cat}*.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📦 Continue sorting", callback_data=f"bulk_{b['cat']}")],
+            [InlineKeyboardButton("⬅️ Categories", callback_data="lib")],
+        ])
     )
 
 # ── PDF Detail ────────────────────────────────────────────────────────────────
@@ -521,6 +607,11 @@ def main():
         (r"^del_yes_\d+$",   cb_del_yes),
         (r"^mv_\d+$",        cb_mv),
         (r"^mv_to_",         cb_mv_to),
+        (r"^bulk_",          cb_bulk_start),
+        (r"^bsel_\d+$",      cb_bulk_toggle),
+        (r"^bpage_\d+$",     cb_bulk_page),
+        (r"^bmv$",           cb_bulk_move_prompt),
+        (r"^bmvto_",         cb_bulk_move_to),
         (r"^search_prompt$", cb_search_prompt),
         (r"^stats$",         cb_stats),
         (r"^manage$",        cb_manage),
