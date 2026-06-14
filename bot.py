@@ -106,6 +106,26 @@ def del_pdf(pid):
 def move_pdf(pid, cat):
     db("UPDATE pdfs SET category=? WHERE id=?", (cat, pid))
 
+def count_dupes():
+    return db("""SELECT COUNT(*) FROM pdfs WHERE id NOT IN (
+                   SELECT id FROM (
+                     SELECT id, ROW_NUMBER() OVER (
+                       PARTITION BY filename ORDER BY (category='Unsorted'), id
+                     ) rn FROM pdfs
+                   ) WHERE rn = 1
+                 )""", fetch="one")[0]
+
+def remove_dupes():
+    n = count_dupes()
+    db("""DELETE FROM pdfs WHERE id NOT IN (
+            SELECT id FROM (
+              SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY filename ORDER BY (category='Unsorted'), id
+              ) rn FROM pdfs
+            ) WHERE rn = 1
+          )""")
+    return n
+
 def search_pdfs(q):
     return db("SELECT id,filename,category FROM pdfs WHERE filename LIKE ? ORDER BY filename LIMIT 20",
               (f"%{q}%",), fetch="all")
@@ -208,6 +228,38 @@ async def cmd_stopimport(u: Update, c: ContextTypes.DEFAULT_TYPE):
         f"✅ *Import mode OFF*\n\n{total} PDFs are in *Unsorted* — ready to categorize via /library.",
         parse_mode="Markdown"
     )
+
+async def cmd_dedupe(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(u, c):
+        await u.message.reply_text("⛔ Admins only."); return
+    n = count_dupes()
+    if n == 0:
+        await u.message.reply_text("✅ No duplicates found — library is clean!"); return
+    await u.message.reply_text(
+        f"🧹 Found *{n} duplicate(s)* (same filename).\n"
+        f"Categorized entries are kept over Unsorted ones.\n\nRemove them?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, clean up", callback_data="dedupe_yes"),
+             InlineKeyboardButton("❌ Cancel",        callback_data="dedupe_no")],
+        ])
+    )
+
+async def cb_dedupe_yes(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query
+    if not await is_admin_by_query(q, c):
+        await q.answer("⛔ Admins only.", show_alert=True); return
+    await q.answer()
+    n = remove_dupes()
+    total, _ = stats()
+    await q.edit_message_text(
+        f"🧹 *{n} duplicate(s) removed.*\n📚 {total} PDFs remain in the library.",
+        parse_mode="Markdown"
+    )
+
+async def cb_dedupe_no(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query; await q.answer()
+    await q.edit_message_text("❌ Cleanup cancelled.")
 
 async def handle_pdf(u: Update, c: ContextTypes.DEFAULT_TYPE):
     global IMPORT_MODE
@@ -600,6 +652,7 @@ def main():
     app.add_handler(CommandHandler("search",      cmd_search))
     app.add_handler(CommandHandler("startimport", cmd_startimport))
     app.add_handler(CommandHandler("stopimport",  cmd_stopimport))
+    app.add_handler(CommandHandler("dedupe",      cmd_dedupe))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
     app.add_handler(new_cat_conv)
 
@@ -621,6 +674,8 @@ def main():
         (r"^bmv$",           cb_bulk_move_prompt),
         (r"^bmvto_",         cb_bulk_move_to),
         (r"^search_prompt$", cb_search_prompt),
+        (r"^dedupe_yes$",    cb_dedupe_yes),
+        (r"^dedupe_no$",     cb_dedupe_no),
         (r"^stats$",         cb_stats),
         (r"^manage$",        cb_manage),
         (r"^cat_del_list$",  cb_cat_del_list),
